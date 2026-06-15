@@ -112,7 +112,9 @@ class AWQConfig(QuantizationConfig):
             from .moe_wna16 import MoeWNA16Config
             from .utils.marlin_utils import check_moe_marlin_supports_layer
 
-            if not check_moe_marlin_supports_layer(layer, self.group_size):
+            if not check_moe_marlin_supports_layer(
+                layer, self.group_size, allow_tile_padding=True
+            ):
                 logger.warning_once(
                     f"Layer '{prefix}' is not supported by AWQMoeMarlin. "
                     "Falling back to Moe WNA16 kernels."
