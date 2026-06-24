@@ -1110,12 +1110,10 @@ class DiffusionSampler:
 
         max_num_reqs = diffusion_states.max_num_reqs
         device = diffusion_states.device
-        # int64 token ids: matches the standard Sampler output and satisfies the
-        # pipeline-parallel broadcast, which asserts sampled_token_ids is int64.
         self._sampled = torch.zeros(
             max_num_reqs,
             self.canvas_length,
-            dtype=torch.int64,
+            dtype=torch.int32,
             device=device,
         )
         self._num_sampled = torch.zeros(
