@@ -412,6 +412,23 @@ class DeepseekSparseSWAMetadataBuilder(AttentionMetadataBuilder):
     _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.UNIFORM_BATCH
     supports_draft_decode_metadata_update = True
 
+    @classmethod
+    def get_cudagraph_support(
+        cls,
+        vllm_config: VllmConfig,
+        kv_cache_spec: KVCacheSpec,
+    ) -> AttentionCGSupport:
+        spec_config = vllm_config.speculative_config
+        if (
+            current_platform.is_device_capability_family(120)
+            and spec_config is not None
+            and spec_config.enable_adaptive_verification
+        ):
+            # SM120 consumes per-token SWA rows built from device query offsets;
+            # the CPU offsets are needed only for the unchanged prefill suffix.
+            return AttentionCGSupport.ALWAYS
+        return super().get_cudagraph_support(vllm_config, kv_cache_spec)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         assert isinstance(self.kv_cache_spec, SlidingWindowMLASpec | MLAAttentionSpec)
