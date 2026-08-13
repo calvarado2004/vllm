@@ -8,6 +8,7 @@ import torch
 
 from vllm.config.cache import CacheDType
 from vllm.forward_context import get_forward_context
+from vllm.logger import init_logger
 from vllm.models.deepseek_v4.attention import DeepseekV4Attention
 from vllm.models.deepseek_v4.common.ops import (
     build_flashinfer_mixed_sparse_indices,
@@ -28,6 +29,8 @@ from vllm.v1.attention.backend import MultipleOf
 
 if TYPE_CHECKING:
     from vllm.v1.attention.backends.mla.sparse_swa import DeepseekSparseSWAMetadata
+
+logger = init_logger(__name__)
 
 _FLASHINFER_DSV4_WORKSPACE_BUFFER_SIZE = 128 * 1024 * 1024
 _flashinfer_dsv4_workspace_by_device: dict[torch.device, torch.Tensor] = {}
@@ -766,6 +769,21 @@ class DeepseekV4FlashInferSM120Attention(DeepseekV4Attention):
             raise RuntimeError(
                 "Compressed sparse MLA decode requires compressed sparse indices."
             )
+        # PATCH(port-debug): one-shot dump of the exact SM120 decode-dispatch
+        # inputs, to diagnose falls-through to the prefill orchestrator.
+        logger.info_once(
+            "sparse-MLA decode dispatch inputs: q=%s swa_cache=%s/%s "
+            "swa_indices=%s extra_cache=%s extra_indices=%s layer=%s",
+            tuple(q.shape),
+            tuple(swa_cache.shape),
+            swa_cache.dtype,
+            tuple(swa_indices.shape),
+            tuple(extra_cache.shape) if extra_cache is not None else None,
+            tuple(extra_sparse_indices.shape)
+            if extra_sparse_indices is not None
+            else None,
+            self.prefix,
+        )
         flashinfer_trtllm_batch_decode_sparse_mla_dsv4(
             query=q,
             swa_kv_cache=swa_cache,
