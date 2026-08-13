@@ -19,8 +19,8 @@ from vllm.models.deepseek_v4.nvidia.ops.o_proj import (
     deep_gemm_fp8_o_proj,
 )
 from vllm.models.deepseek_v4.sparse_mla import (
-    DeepseekV4FlashMLABackend,
     DeepseekV4FlashMLAMetadata,
+    DeepseekV4SparseMLABackend,
 )
 from vllm.platforms import current_platform
 from vllm.platforms.interface import DeviceCapability
@@ -82,11 +82,10 @@ def _pad_to_supported_q_heads(num_heads: int) -> int:
     )
 
 
-class DeepseekV4FlashInferMLASparseBackend(DeepseekV4FlashMLABackend):
+class DeepseekV4FlashInferMLASparseBackend(DeepseekV4SparseMLABackend):
     """FlashInfer backend using the DSv4 sparse metadata/cache layout.
 
-    Inheriting from the FlashMLA V4 backend reuses its
-    ``DeepseekV4FlashMLAMetadata`` builder.
+    Inherits the base and backend reuses its``DeepseekV4SparseMLAMetadataBuilder``
     """
 
     supported_dtypes: ClassVar[list[torch.dtype]] = [torch.bfloat16]
@@ -167,7 +166,7 @@ class DeepseekV4FlashInferMLASparseBackend(DeepseekV4FlashMLABackend):
     ) -> tuple[int, ...]:
         device_capability = current_platform.get_device_capability()
         if device_capability is not None and device_capability.major == 12:
-            return DeepseekV4FlashMLABackend.get_kv_cache_shape(
+            return DeepseekV4SparseMLABackend.get_kv_cache_shape(
                 num_blocks,
                 block_size,
                 num_kv_heads,
@@ -497,8 +496,6 @@ class DeepseekV4FlashInferMLAAttention(DeepseekV4Attention):
         # uniform-q batches, and this avoids flattening mixed batches into one call.
         if num_decode_tokens > 0:
             decode_cu = query_start_loc[: num_decodes + 1]
-            decode_cu_cpu = query_start_loc_cpu[: num_decodes + 1]
-            decode_lens_cpu = decode_cu_cpu[1:] - decode_cu_cpu[:-1]
             flashinfer_trtllm_batch_decode_sparse_mla_dsv4(
                 query=query[:num_decode_tokens],
                 swa_kv_cache=swa_k_cache,
@@ -512,7 +509,7 @@ class DeepseekV4FlashInferMLAAttention(DeepseekV4Attention):
                 bmm2_scale=bmm2_scale,
                 sinks=self.attn_sink,
                 cum_seq_lens_q=decode_cu,
-                max_q_len=int(decode_lens_cpu.max().item()),
+                max_q_len=swa_metadata.max_decode_query_len,
             )
 
         if num_prefill_tokens > 0:
@@ -721,9 +718,7 @@ class DeepseekV4FlashInferSM120Attention(DeepseekV4Attention):
         topk = indices.shape[-1]
         if topk in _SM120_SPARSE_DECODE_TOPK_BUCKETS:
             return indices
-        bucket = next(
-            (b for b in _SM120_SPARSE_DECODE_TOPK_BUCKETS if b >= topk), None
-        )
+        bucket = next((b for b in _SM120_SPARSE_DECODE_TOPK_BUCKETS if b >= topk), None)
         if bucket is None:
             return indices
         return torch.nn.functional.pad(indices, (0, bucket - topk), value=-1)
