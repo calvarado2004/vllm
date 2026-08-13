@@ -2538,15 +2538,11 @@ class VllmConfig:
     def validate_nvfp4_kv_cache_with_mla(self) -> "VllmConfig":
         if self.model_config is None:
             return self
-        if (
-            self.cache_config.cache_dtype.startswith("nvfp4")
-            and self.model_config.use_mla
-        ):
-            raise ValueError(
-                "nvfp4 KV cache is not supported with MLA (Multi-head Latent "
-                "Attention) backends. Please use a different --kv-cache-dtype "
-                "(e.g., 'fp8' or 'auto') for MLA models such as DeepSeek."
-            )
+        if self.cache_config.cache_dtype == "nvfp4" and self.model_config.use_mla:
+            # MLA models store the compressed latent KV in the padded
+            # nvfp4_ds_mla layout (fp8_ds_mla envelope with NVFP4 payload)
+            # rather than the per-head nvfp4 layout.
+            self.cache_config.cache_dtype = "nvfp4_ds_mla"
         return self
 
     @model_validator(mode="after")
