@@ -29,6 +29,12 @@ from vllm.v1.attention.backend import MultipleOf
 if TYPE_CHECKING:
     from vllm.v1.attention.backends.mla.sparse_swa import DeepseekSparseSWAMetadata
 
+# Top-k widths the FlashInfer SM120 sparse-MLA decode kernels are built for.
+# Widths without a bucket fall through to the prefill orchestrator, which
+# rejects decode-sized batches (num_tokens <= 64).
+_SM120_SPARSE_DECODE_TOPK_BUCKETS = (128, 512, 1024)
+
+
 _FLASHINFER_DSV4_WORKSPACE_BUFFER_SIZE = 128 * 1024 * 1024
 _flashinfer_dsv4_workspace_by_device: dict[torch.device, torch.Tensor] = {}
 
@@ -692,6 +698,31 @@ class DeepseekV4FlashInferSM120Attention(DeepseekV4Attention):
             swa_only=swa_only,
         )
 
+    @staticmethod
+    def _pad_topk_to_sm120_bucket(indices: torch.Tensor) -> torch.Tensor:
+        """Pad sparse top-k indices up to an SM120 decode kernel bucket.
+
+        The DSpark draft's 256-token sliding window yields top-k=256, which
+        has no decode kernel instantiation. Padding with -1 (kernel-skipped)
+        keeps the call on the decode path; effective lengths are passed
+        separately, so the padding is never read.
+
+        Only decode-sized calls (num_tokens <= 64) are padded: larger batches
+        take the prefill orchestrator, which supports the raw top-k widths
+        but not all padded ones (e.g. top-k 512 with a compressed segment).
+        """
+        if indices.shape[0] > 64:
+            return indices
+        topk = indices.shape[-1]
+        if topk in _SM120_SPARSE_DECODE_TOPK_BUCKETS:
+            return indices
+        bucket = next(
+            (b for b in _SM120_SPARSE_DECODE_TOPK_BUCKETS if b >= topk), None
+        )
+        if bucket is None:
+            return indices
+        return torch.nn.functional.pad(indices, (0, bucket - topk), value=-1)
+
     def _prepare_query(self, q: torch.Tensor, output: torch.Tensor) -> torch.Tensor:
         if self.kv_cache_torch_dtype == torch.float8_e4m3fn:
             assert q.dtype == torch.float8_e4m3fn
@@ -756,6 +787,7 @@ class DeepseekV4FlashInferSM120Attention(DeepseekV4Attention):
         swa_lens = swa_metadata.decode_swa_lens
         assert swa_indices is not None
         assert swa_lens is not None
+        swa_indices = self._pad_topk_to_sm120_bucket(swa_indices)
         q = self._prepare_query(q, output)
         swa_cache = self._as_sparse_cache(self.swa_cache_layer.kv_cache)
         extra_cache = self._as_sparse_cache(kv_cache) if kv_cache is not None else None
