@@ -307,6 +307,10 @@ class ModelRunnerOutput:
     # ``None`` when ``enable_return_routed_experts`` is off.
     routed_experts: RoutedExpertsLists | None = None
 
+    # Confidence-derived proposal lengths, bound to this output's request IDs.
+    # Async scheduling uses them to resize the next draft placeholders.
+    draft_token_lengths: dict[str, int] | None = None
+
     @staticmethod
     def with_kv_conn_output_only(
         kv_connector_output: KVConnectorOutput | None,

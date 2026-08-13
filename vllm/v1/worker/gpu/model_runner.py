@@ -1585,12 +1585,39 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             )
             self.req_states.draft_tokens[input_batch.idx_mapping] = draft_tokens
 
+        confidence_probs = None
+        confidence_threshold = 0.0
+        if self.speculator is not None:
+            confidence_probs = getattr(
+                self.speculator, "draft_token_confidence_probs", None
+            )
+            confidence_threshold = getattr(self.speculator, "confidence_threshold", 0.0)
+            if confidence_probs is not None:
+                confidence_probs = confidence_probs[
+                    : len(input_batch.req_ids), : self.num_speculative_steps
+                ]
+
         if self.num_speculative_steps > 0:
             # Spec-decode and diffusion LLMs both use draft tokens but the latter does
             # not have a speculator (i.e. self.speculator is None)
             self.draft_tokens_handler.set_draft_tokens(
                 input_batch,
                 self.req_states.draft_tokens[input_batch.idx_mapping],
+                confidence_probs=None
+                if self.scheduler_config.async_scheduling
+                else confidence_probs,
+                confidence_threshold=confidence_threshold,
+            )
+
+        if confidence_probs is not None and self.scheduler_config.async_scheduling:
+            # Bind a private tiny tensor to this in-flight output. The persistent
+            # graph buffer can then be overwritten by the next proposal safely.
+            async_output.set_draft_confidence(
+                input_batch.req_ids,
+                confidence_probs.clone(),
+                confidence_threshold,
+                self.main_stream,
+                self.output_copy_stream,
             )
 
         # Post-step KV connector related operations.

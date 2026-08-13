@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, get_args
 from pydantic import Field, SkipValidation, field_validator, model_validator
 from typing_extensions import Self
 
+import vllm.envs as envs
 from vllm.config import LoadConfig
 from vllm.config.cache import CacheDType
 from vllm.config.kernel import MoEBackend
@@ -181,6 +182,19 @@ class SpeculativeConfig:
 
     Each entry is ``(range_start, range_end, num_speculative_tokens)`` with an
     inclusive batch-size range.
+    """
+
+    confidence_threshold: float = Field(
+        default_factory=lambda: envs.VLLM_DSPARK_CONFIDENCE_THRESHOLD,
+        ge=0.0,
+        lt=1.0,
+    )
+    """Cumulative draft-confidence threshold for per-request DSpark prefixes.
+
+    Zero disables confidence scheduling and preserves fixed-K verification.
+    A positive value keeps the longest prefix whose cumulative confidence is
+    greater than or equal to the threshold. It can also be set through
+    ``VLLM_DSPARK_CONFIDENCE_THRESHOLD``.
     """
 
     # params generated in the post-init stage
@@ -1325,6 +1339,9 @@ class SpeculativeConfig:
             raise ValueError(
                 "use_heterogeneous_vocab only works with method='draft_model'"
             )
+
+        if self.confidence_threshold > 0.0 and not self.use_dspark():
+            raise ValueError("confidence_threshold currently requires method='dspark'")
 
         if self.use_heterogeneous_vocab and self.draft_sample_method != "greedy":
             raise ValueError(

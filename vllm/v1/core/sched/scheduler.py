@@ -58,6 +58,7 @@ from vllm.v1.metrics.perf import ModelMetrics, PerfStats
 from vllm.v1.metrics.stats import PrefixCacheStats, SchedulerStats
 from vllm.v1.outputs import DraftTokenIds, KVConnectorOutput, ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus, StreamingUpdate
+from vllm.v1.spec_decode.dspark_confidence import clamp_async_draft_length
 from vllm.v1.spec_decode.dynamic.utils import build_dynamic_sd_schedule_lookup
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputGrammar, StructuredOutputManager
@@ -1680,6 +1681,7 @@ class Scheduler(SchedulerInterface):
         num_nans_in_logits = model_runner_output.num_nans_in_logits
         kv_connector_output = model_runner_output.kv_connector_output
         cudagraph_stats = model_runner_output.cudagraph_stats
+        draft_token_lengths = model_runner_output.draft_token_lengths
 
         # Every GPU write enqueued by this and earlier steps has completed, so it is
         # safe to return deferred-free blocks to the pool.
@@ -1905,6 +1907,27 @@ class Scheduler(SchedulerInterface):
                     stopped_running_reqs.add(request)
                 else:
                     stopped_preempted_reqs.add(request)
+            elif (
+                draft_token_lengths is not None
+                and self.scheduler_config.async_scheduling
+                and not output_is_stale
+                and new_token_ids
+                and not request.is_prefill_chunk
+                and request.status == RequestStatus.RUNNING
+            ):
+                # The worker keeps the actual drafts on GPU in async mode. Resize
+                # the scheduler's placeholders to the same confidence-selected
+                # prefix before the next target step is scheduled.
+                draft_len = draft_token_lengths.get(req_id)
+                if draft_len is not None:
+                    # Never re-expand a prefix already shortened by grammar or
+                    # another per-request constraint.
+                    draft_len = clamp_async_draft_length(
+                        draft_len,
+                        len(request.spec_token_ids),
+                        self.num_spec_tokens,
+                    )
+                    request.spec_token_ids = [-1] * draft_len
 
             # Extract sample logprobs if needed.
             if (

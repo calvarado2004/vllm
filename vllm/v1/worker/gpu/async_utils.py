@@ -12,6 +12,7 @@ from vllm.v1.outputs import (
     ModelRunnerOutput,
     PoolerOutput,
 )
+from vllm.v1.spec_decode.dspark_confidence import map_confidence_prefix_lengths
 from vllm.v1.worker.gpu.sample.output import SamplerOutput
 
 
@@ -34,6 +35,11 @@ class AsyncOutput(AsyncModelRunnerOutput):
         # Blocking (sleep) event to avoid busy-polling the CUDA driver lock.
         self.copy_event = torch.cuda.Event(blocking=True)
         self._has_fault: torch.Tensor | None = None
+        self._draft_confidence_probs: torch.Tensor | None = None
+        self._draft_confidence_np: np.ndarray | None = None
+        self._draft_confidence_event: torch.cuda.Event | None = None
+        self._draft_confidence_req_ids: list[str] | None = None
+        self._draft_confidence_threshold = 0.0
 
         with stream(copy_stream, main_stream):
             copy_stream.wait_stream(main_stream)
@@ -57,6 +63,25 @@ class AsyncOutput(AsyncModelRunnerOutput):
                 self._has_fault = has_fault.to("cpu", non_blocking=True)
             self.copy_event.record(copy_stream)
 
+    def set_draft_confidence(
+        self,
+        req_ids: list[str],
+        confidence_probs: torch.Tensor,
+        confidence_threshold: float,
+        main_stream: torch.cuda.Stream,
+        copy_stream: torch.cuda.Stream,
+    ) -> None:
+        """Start a batch-bound confidence D2H copy after draft generation."""
+        self._draft_confidence_probs = confidence_probs
+        self._draft_confidence_req_ids = req_ids.copy()
+        self._draft_confidence_threshold = confidence_threshold
+        self._draft_confidence_event = torch.cuda.Event(blocking=True)
+        with stream(copy_stream, main_stream):
+            copy_stream.wait_stream(main_stream)
+            self._draft_confidence_np = async_copy_to_np(confidence_probs)
+            confidence_probs.record_stream(copy_stream)
+            self._draft_confidence_event.record(copy_stream)
+
     def get_output(self) -> ModelRunnerOutput:
         self.copy_event.synchronize()
 
@@ -78,6 +103,19 @@ class AsyncOutput(AsyncModelRunnerOutput):
         if self.logprobs_tensors is not None:
             self.model_runner_output.logprobs = self.logprobs_tensors.tolists()
         self.model_runner_output.prompt_logprobs_dict = self.prompt_logprobs_dict
+
+        if self._draft_confidence_event is not None:
+            self._draft_confidence_event.synchronize()
+            assert self._draft_confidence_np is not None
+            assert self._draft_confidence_req_ids is not None
+            self.model_runner_output.draft_token_lengths = (
+                map_confidence_prefix_lengths(
+                    self._draft_confidence_req_ids,
+                    self._draft_confidence_np,
+                    self._draft_confidence_threshold,
+                )
+            )
+            self._draft_confidence_probs = None
 
         if self._has_fault is not None and self._has_fault.item():
             mask = get_ep_all2all_manager().query_active_mask()
