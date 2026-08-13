@@ -116,6 +116,44 @@ vllm serve <path_to_exported_checkpoint> \
   --host 0.0.0.0 --port 8000
 ```
 
+### Mixed FP8/NVFP4 DeepSeek V4 checkpoints
+
+Some DeepSeek V4 checkpoints use block FP8 for dense layers and NVFP4 only
+for routed experts. Their model config has `quant_method: fp8` together with
+`moe_quant_algo: NVFP4`. vLLM detects this mixed layout and routes the experts
+to the ModelOpt NVFP4 implementation; do not force `--quantization
+modelopt_fp4`, because that would describe the whole checkpoint as NVFP4.
+
+For example, a native NVFP4 expert backend can be selected on Blackwell GPUs:
+
+```bash
+vllm serve tomsarihan/DeepSeek-V4-Flash-0731-NVFP4 \
+  --tensor-parallel-size 2 \
+  --trust-remote-code \
+  --tokenizer-mode deepseek_v4 \
+  --moe-backend flashinfer_cutlass
+```
+
+The 0731 checkpoint stores a DSpark block drafter under `mtp.*`. To enable it,
+use `method: dspark` and at least the checkpoint's `dspark_block_size` (5), not
+`method: mtp`. `num_nextn_predict_layers: 1` does not change the draft format.
+
+```bash
+vllm serve tomsarihan/DeepSeek-V4-Flash-0731-NVFP4 \
+  --tensor-parallel-size 2 \
+  --trust-remote-code \
+  --tokenizer-mode deepseek_v4 \
+  --moe-backend flashinfer_cutlass \
+  --speculative-config '{
+    "method": "dspark",
+    "num_speculative_tokens": 5,
+    "draft_sample_method": "probabilistic"
+  }'
+```
+
+NVFP4 in this checkpoint describes the routed expert weights. KV-cache
+quantization is configured independently with `--kv-cache-dtype`.
+
 ## Testing (local checkpoints)
 
 vLLM's ModelOpt unit tests are gated by local checkpoint paths and are skipped
