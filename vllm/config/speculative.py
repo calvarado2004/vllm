@@ -81,6 +81,24 @@ RejectionSampleMethod = Literal["standard", "synthetic", "block"]
 DraftSampleMethod = Literal["greedy", "probabilistic"]
 
 
+def ships_dspark_drafter(hf_config: PretrainedConfig) -> bool:
+    """Whether a DeepSeek-V4 checkpoint's `mtp.*` weights are a DSpark drafter.
+
+    Every DeepSeek-V4 config declares `num_nextn_predict_layers`, but the
+    `mtp.*` tensors behind it are an MTP head in some checkpoints and a
+    multi-stage DSpark drafter in others. Only the latter carry the `dspark_*`
+    keys, and their `mtp.*` weights have no `enorm`/`hnorm`/`e_proj`/`h_proj`,
+    so `DeepSeekV4MTPModel` cannot load them.
+    """
+    if getattr(hf_config, "dspark_target_layer_ids", None) is None:
+        return False
+    # ``hf_config_override`` rewrites model_type to ``deepseek_mtp`` and pins the
+    # MTP architecture, so accept the raw and the already-overridden shape alike.
+    return getattr(hf_config, "model_type", None) == "deepseek_v4" or (
+        "DeepSeekV4MTPModel" in (getattr(hf_config, "architectures", None) or [])
+    )
+
+
 @config
 class SpeculativeConfig:
     """Configuration for speculative decoding."""
@@ -760,6 +778,16 @@ class SpeculativeConfig:
             if self.method == "mtp":
                 if self.target_model_config is None:
                     raise ValueError("target_model_config must be present for mtp")
+                hf_text_config = self.target_model_config.hf_text_config
+                if ships_dspark_drafter(hf_text_config):
+                    block_size = getattr(hf_text_config, "dspark_block_size", None)
+                    raise ValueError(
+                        f"{self.target_model_config.model} ships a DSpark "
+                        "drafter rather than an MTP head, so method='mtp' "
+                        "cannot load its weights. Use method='dspark' with "
+                        "num_speculative_tokens >= dspark_block_size "
+                        f"({block_size})."
+                    )
                 if self.target_model_config.hf_text_config.model_type == "deepseek_v32":
                     # FIXME(luccafong): cudagraph with v32 MTP is not supported,
                     # remove this when the issue is fixed.
@@ -950,6 +978,10 @@ class SpeculativeConfig:
                     "dspark" in self.draft_model_config.model.lower()
                     or "Qwen3DSparkModel" in self.draft_model_config.architectures
                     or "Gemma4DSparkModel" in self.draft_model_config.architectures
+                    # DeepSeek-V4 DSpark checkpoints are not always named
+                    # ``*dspark*`` (e.g. DeepSeek-V4-Flash-0731), so fall back to
+                    # the config keys rather than routing them to MTP.
+                    or ships_dspark_drafter(self.draft_model_config.hf_config)
                 ):
                     self.method = "dspark"
                 elif self.draft_model_config.hf_config.model_type == "medusa":
