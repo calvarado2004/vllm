@@ -711,7 +711,13 @@ class DeepseekV4FlashInferSM120Attention(DeepseekV4Attention):
         has no decode kernel instantiation. Padding with -1 (kernel-skipped)
         keeps the call on the decode path; effective lengths are passed
         separately, so the padding is never read.
+
+        Only decode-sized calls (num_tokens <= 64) are padded: larger batches
+        take the prefill orchestrator, which supports the raw top-k widths
+        but not all padded ones (e.g. top-k 512 with a compressed segment).
         """
+        if indices.shape[0] > 64:
+            return indices
         topk = indices.shape[-1]
         if topk in _SM120_SPARSE_DECODE_TOPK_BUCKETS:
             return indices
