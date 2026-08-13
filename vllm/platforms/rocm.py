@@ -25,6 +25,15 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+
+def _log_import_failure(name: str, e: ImportError) -> None:
+    # This module is imported during platform detection on every build.
+    # Missing ROCm-side modules are expected on non-HIP torch builds and
+    # would read as errors to users, so only warn when actually on ROCm.
+    log = logger.warning if torch.version.hip is not None else logger.debug
+    log("Failed to import from %s with %r", name, e)
+
+
 try:
     from amdsmi import (
         AmdSmiException,
@@ -39,23 +48,23 @@ try:
         amdsmi_topo_get_numa_node_number,
     )
 except ImportError as e:
-    logger.warning("Failed to import from amdsmi with %r", e)
+    _log_import_failure("amdsmi", e)
 
 try:
     import vllm._C  # noqa: F401
 except ImportError as e:
-    logger.warning("Failed to import from vllm._C with %r", e)
+    _log_import_failure("vllm._C", e)
 
 # import custom ops, trigger op registration
 try:
     import vllm._C_stable_libtorch  # noqa: F401
 except ImportError as e:
-    logger.warning("Failed to import from vllm._C_stable_libtorch with %r", e)
+    _log_import_failure("vllm._C_stable_libtorch", e)
 
 try:
     import vllm._rocm_C  # noqa: F401
 except ImportError as e:
-    logger.warning("Failed to import from vllm._rocm_C with %r", e)
+    _log_import_failure("vllm._rocm_C", e)
 
 # Models not supported by ROCm.
 _ROCM_UNSUPPORTED_MODELS: list[str] = []
