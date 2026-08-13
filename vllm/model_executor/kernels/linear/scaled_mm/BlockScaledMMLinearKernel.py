@@ -91,6 +91,13 @@ class Fp8BlockScaledMMLinearKernel(
             weight_scale,
         )
 
+        # sm_121: only DeepGEMM reads float8_e8m0fnu scales natively and it has
+        # no arch_major==12 kernels; CUTLASS asserts scales are Float and Triton
+        # has no float8_e8m0fnu dtype mapping. e8m0 values are exact powers of
+        # two, so widening to float32 is lossless.
+        if new_weight_scale.dtype == torch.float8_e8m0fnu:
+            new_weight_scale = new_weight_scale.to(torch.float32)
+
         replace_parameter(layer, params.WEIGHT, new_weight.data)
         replace_parameter(layer, scale_attr_name, new_weight_scale.data)
 
