@@ -164,6 +164,7 @@ if TYPE_CHECKING:
     VLLM_RUST_FRONTEND_PATH: str | None = "auto"
     VLLM_SERVER_DEV_MODE: bool = False
     VLLM_V1_OUTPUT_PROC_CHUNK_SIZE: int = 128
+    VLLM_SUPPRESS_STOPS_IN_REASONING: bool = True
     VLLM_MLA_DISABLE: bool = False
     VLLM_RAY_PER_WORKER_GPUS: float = 1.0
     VLLM_RAY_BUNDLE_INDICES: str = ""
@@ -1418,6 +1419,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # TTFT and overall throughput.
     "VLLM_V1_OUTPUT_PROC_CHUNK_SIZE": lambda: int(
         os.getenv("VLLM_V1_OUTPUT_PROC_CHUNK_SIZE", "128")
+    ),
+    # If set to 0, client stop strings are evaluated inside the reasoning
+    # segment as well. By default, when a request's prompt ends with the
+    # reasoning start marker (think-in-prompt templates), stop strings stay
+    # dormant until the reasoning end marker appears in the output.
+    # NOTE: this is process-wide, not per-request.
+    "VLLM_SUPPRESS_STOPS_IN_REASONING": lambda: (
+        os.getenv("VLLM_SUPPRESS_STOPS_IN_REASONING", "1") == "1"
     ),
     # If set, vLLM will disable the MLA attention optimizations.
     "VLLM_MLA_DISABLE": lambda: bool(int(os.getenv("VLLM_MLA_DISABLE", "0"))),
