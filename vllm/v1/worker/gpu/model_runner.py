@@ -56,6 +56,9 @@ from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE
 from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
 from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
 from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
+from vllm.v1.worker.adaptive_verification_profile_cache import (
+    initialize_adaptive_verification_profile,
+)
 from vllm.v1.worker.block_table import get_block_table_width
 from vllm.v1.worker.cp_utils import check_attention_cp_compatibility
 from vllm.v1.worker.gpu import pcp_manager as pcp
@@ -819,12 +822,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             if self.speculator is not None:
                 self.speculator.capture()
             if self.adaptive_verification is not None:
-                with self.step_timing.collect() as timings:
-                    for batch in self.adaptive_verification.batches_to_profile(
-                        self.cudagraph_manager.captured_token_counts()
-                    ):
-                        self._dummy_run(**batch)
-                self.adaptive_verification.set_initial_cost_curves(timings)
+                initialize_adaptive_verification_profile(
+                    self, self.cudagraph_manager.captured_token_counts()
+                )
 
         end_time = time.perf_counter()
         end_free_gpu_memory = torch.accelerator.get_memory_info()[0]
