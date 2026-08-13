@@ -152,9 +152,14 @@ class DeepseekV32IndexerBackend(AttentionBackend):
 
     @classmethod
     def supports_device_cpu_query_lens_mismatch(cls) -> bool:
-        # Only the varlen paged MQA logits kernel takes per-request query
-        # lengths from device tensors; otherwise the indexer needs uniform ones.
-        return _supports_varlen_paged_mqa_logits()
+        # SM100 has a native varlen paged-MQA kernel. SM120 instead flattens
+        # decode requests into one MQA row per token; that expansion is driven
+        # by device query_start_loc and therefore also supports a CPU/device
+        # per-request mismatch (the total token count remains identical).
+        return _supports_varlen_paged_mqa_logits() or (
+            current_platform.is_cuda()
+            and current_platform.is_device_capability_family(120)
+        )
 
     @staticmethod
     def get_name() -> str:
@@ -503,6 +508,13 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
     ) -> AttentionCGSupport:
         if _supports_varlen_paged_mqa_logits():
             return AttentionCGSupport.ALWAYS
+        spec_config = vllm_config.speculative_config
+        if (
+            current_platform.is_device_capability_family(120)
+            and spec_config is not None
+            and spec_config.enable_adaptive_verification
+        ):
+            return AttentionCGSupport.ALWAYS
         return AttentionCGSupport.UNIFORM_BATCH
 
     def __init__(self, *args, block_table_width: int, **kwargs) -> None:
@@ -555,6 +567,11 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             100
         ) and next_n not in (1, 2)
         self.supports_varlen = _supports_varlen_paged_mqa_logits()
+        self.adaptive_device_query_lens = (
+            current_platform.is_device_capability_family(120)
+            and self.vllm_config.speculative_config is not None
+            and self.vllm_config.speculative_config.enable_adaptive_verification
+        )
         logger.info_once(
             "DSA indexer decode path: use_flattening=%s supports_varlen=%s "
             "(next_n=%d, use_fp4_indexer_cache=%s)",
@@ -678,6 +695,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             assert self.decode_seq_lens_buffer.dim() == 1
             if (
                 not self.supports_varlen
+                and not self.adaptive_device_query_lens
                 and min_decode_len == max_decode_len
                 and num_decodes * max_decode_len == num_decode_tokens
             ):
