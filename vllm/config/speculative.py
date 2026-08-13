@@ -778,16 +778,6 @@ class SpeculativeConfig:
             if self.method == "mtp":
                 if self.target_model_config is None:
                     raise ValueError("target_model_config must be present for mtp")
-                hf_text_config = self.target_model_config.hf_text_config
-                if ships_dspark_drafter(hf_text_config):
-                    block_size = getattr(hf_text_config, "dspark_block_size", None)
-                    raise ValueError(
-                        f"{self.target_model_config.model} ships a DSpark "
-                        "drafter rather than an MTP head, so method='mtp' "
-                        "cannot load its weights. Use method='dspark' with "
-                        "num_speculative_tokens >= dspark_block_size "
-                        f"({block_size})."
-                    )
                 if self.target_model_config.hf_text_config.model_type == "deepseek_v32":
                     # FIXME(luccafong): cudagraph with v32 MTP is not supported,
                     # remove this when the issue is fixed.
@@ -948,6 +938,19 @@ class SpeculativeConfig:
                     hf_overrides=draft_hf_overrides,
                     config_format=self.target_model_config.config_format,
                 )
+
+                if self.method == "mtp" and ships_dspark_drafter(
+                    self.draft_model_config.hf_config
+                ):
+                    hf_config = self.draft_model_config.hf_config
+                    block_size = getattr(hf_config, "dspark_block_size", None)
+                    raise ValueError(
+                        f"{self.draft_model_config.model} ships a DSpark "
+                        "drafter rather than an MTP head, so method='mtp' "
+                        "cannot load its weights. Use method='dspark' with "
+                        "num_speculative_tokens >= dspark_block_size "
+                        f"({block_size})."
+                    )
 
                 # Old-format Medusa checkpoints (e.g. FasterDecoding/medusa-*)
                 # omit vocab_size in config.json, so MedusaConfig falls back to
