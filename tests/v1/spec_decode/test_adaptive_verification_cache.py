@@ -88,6 +88,15 @@ def test_profile_factors_flatten_attention_groups(monkeypatch) -> None:
 
     assert factors["backends"]["attention"] == ["TEST"]
     assert factors["backends"]["kv"] == [{"block_size": 16}]
+    assert "kv_cache" not in factors["backends"]
+
+    # Allocator-dependent KV capacity can vary between otherwise identical
+    # boots and must not invalidate compute-cost curves.
+    runner.kv_cache_config = SimpleNamespace(num_blocks=100, size=1024)
+    first = profile_cache_fingerprint(build_profile_cache_factors(runner, [1, 8]))
+    runner.kv_cache_config = SimpleNamespace(num_blocks=200, size=2048)
+    second = profile_cache_fingerprint(build_profile_cache_factors(runner, [1, 8]))
+    assert first == second
 
 
 def _factors() -> dict:
