@@ -193,8 +193,6 @@ def build_profile_cache_factors(
     attn_groups = [
         group for groups in getattr(runner, "attn_groups", ()) for group in groups
     ]
-    kv_config = getattr(runner, "kv_cache_config", None)
-
     return {
         "schema": PROFILE_CACHE_SCHEMA_VERSION,
         "model": _model_identity(runner),
@@ -220,7 +218,6 @@ def build_profile_cache_factors(
         "backends": {
             "attention": sorted(group.backend.get_name() for group in attn_groups),
             "kv": [_jsonable(group.kv_cache_spec) for group in attn_groups],
-            "kv_cache": _jsonable(kv_config),
             "moe_setting": kernel.moe_backend,
             "linear_setting": kernel.linear_backend,
             # Class selection makes auto-selected MoE/linear implementations part
