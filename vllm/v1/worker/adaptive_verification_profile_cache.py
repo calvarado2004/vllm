@@ -34,6 +34,20 @@ CostCurve = list[tuple[int, float]]
 CachedCurves = tuple[CostCurve, CostCurve]
 
 
+def _device_total_memory_mib() -> int:
+    """Return stable device capacity even when NVML omits unified memory."""
+    try:
+        total_memory = current_platform.get_device_total_memory()
+    # Some unified-memory devices, including GB10, do not expose this through
+    # NVML. The cache is an optional optimization, so use PyTorch's runtime
+    # view rather than disabling it for an otherwise supported device.
+    except Exception:  # noqa: BLE001
+        properties = torch.cuda.get_device_properties(torch.cuda.current_device())
+        total_memory = properties.total_memory
+    # Identical unified-memory devices can differ by a page in the raw value.
+    return int(total_memory) // (1024 * 1024)
+
+
 def _canonical_json(value: Any) -> bytes:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), default=str
@@ -186,7 +200,7 @@ def build_profile_cache_factors(
         "hardware": {
             "device_name": current_platform.get_device_name(),
             "device_capability": str(capability) if capability else "",
-            "device_total_memory": current_platform.get_device_total_memory(),
+            "device_total_memory_mib": _device_total_memory_mib(),
         },
         "software": {
             "vllm": vllm_version,
@@ -203,9 +217,7 @@ def build_profile_cache_factors(
         },
         "backends": {
             "attention": sorted(group.backend.get_name() for group in attn_groups),
-            "kv": [
-                _jsonable(group.kv_cache_spec) for group in attn_groups
-            ],
+            "kv": [_jsonable(group.kv_cache_spec) for group in attn_groups],
             "kv_cache": _jsonable(kv_config),
             "moe_setting": kernel.moe_backend,
             "linear_setting": kernel.linear_backend,
@@ -235,9 +247,7 @@ def profile_cache_fingerprint(factors: dict[str, Any]) -> str:
 
 def _cache_path(fingerprint: str, cache_root: str | None = None) -> str:
     root = envs.VLLM_CACHE_ROOT if cache_root is None else cache_root
-    return os.path.join(
-        root, "adaptive_verification", f"profile_{fingerprint}.json"
-    )
+    return os.path.join(root, "adaptive_verification", f"profile_{fingerprint}.json")
 
 
 def _valid_curve(value: Any) -> CostCurve | None:
@@ -396,10 +406,9 @@ def initialize_adaptive_verification_profile(
         try:
             factors = build_profile_cache_factors(runner, capture_sizes)
             local_fingerprint = profile_cache_fingerprint(factors)
-        except (OSError, TypeError, ValueError) as error:
-            logger.warning(
-                "Adaptive profile cache unavailable on this rank: %s", error
-            )
+        # This optimization must never make a previously valid boot fail.
+        except Exception as error:  # noqa: BLE001
+            logger.warning("Adaptive profile cache unavailable on this rank: %s", error)
             local_fingerprint = None
 
         source_fingerprint = tp_group.broadcast_object(local_fingerprint, src=0)
