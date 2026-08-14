@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from vllm.v1.worker.adaptive_verification_profile_cache import (
     PROFILE_CACHE_SCHEMA_VERSION,
     _cache_path,
+    _device_total_memory_mib,
     _digest,
     load_profile_cache,
     profile_cache_fingerprint,
@@ -14,6 +15,24 @@ from vllm.v1.worker.adaptive_verification_profile_cache import (
     sentinel_batches,
     validate_profile_sentinel,
 )
+
+
+def test_device_total_memory_falls_back_for_unified_memory(monkeypatch) -> None:
+    def unsupported() -> int:
+        raise RuntimeError("Not Supported")
+
+    monkeypatch.setattr(
+        "vllm.v1.worker.adaptive_verification_profile_cache."
+        "current_platform.get_device_total_memory",
+        unsupported,
+    )
+    monkeypatch.setattr("torch.cuda.current_device", lambda: 0)
+    monkeypatch.setattr(
+        "torch.cuda.get_device_properties",
+        lambda _device: SimpleNamespace(total_memory=130663235584),
+    )
+
+    assert _device_total_memory_mib() == 124610
 
 
 def _factors() -> dict:
