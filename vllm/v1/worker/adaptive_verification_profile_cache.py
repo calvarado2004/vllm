@@ -190,7 +190,9 @@ def build_profile_cache_factors(
     compilation = runner.compilation_config
     speculative = runner.speculative_config
     kernel = runner.vllm_config.kernel_config
-    attn_groups = getattr(runner, "attn_groups", ())
+    attn_groups = [
+        group for groups in getattr(runner, "attn_groups", ()) for group in groups
+    ]
     kv_config = getattr(runner, "kv_cache_config", None)
 
     return {

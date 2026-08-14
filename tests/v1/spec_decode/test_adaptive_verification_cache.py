@@ -9,6 +9,7 @@ from vllm.v1.worker.adaptive_verification_profile_cache import (
     _cache_path,
     _device_total_memory_mib,
     _digest,
+    build_profile_cache_factors,
     load_profile_cache,
     profile_cache_fingerprint,
     save_profile_cache,
@@ -33,6 +34,60 @@ def test_device_total_memory_falls_back_for_unified_memory(monkeypatch) -> None:
     )
 
     assert _device_total_memory_mib() == 124610
+
+
+def test_profile_factors_flatten_attention_groups(monkeypatch) -> None:
+    backend = SimpleNamespace(get_name=lambda: "TEST")
+    group = SimpleNamespace(backend=backend, kv_cache_spec={"block_size": 16})
+    runner = SimpleNamespace(
+        model_config=SimpleNamespace(
+            model="remote/model",
+            hf_config=SimpleNamespace(
+                _commit_hash="resolved", to_dict=lambda: {"model_type": "test"}
+            ),
+            revision=None,
+            code_revision=None,
+            tokenizer_revision=None,
+            max_model_len=1024,
+        ),
+        vllm_config=SimpleNamespace(
+            compute_hash=lambda: "vllm-hash",
+            kernel_config=SimpleNamespace(moe_backend="auto", linear_backend="auto"),
+        ),
+        parallel_config=SimpleNamespace(
+            tensor_parallel_size=2,
+            pipeline_parallel_size=1,
+            data_parallel_size=1,
+            decode_context_parallel_size=1,
+        ),
+        scheduler_config=SimpleNamespace(max_num_seqs=2, max_num_batched_tokens=64),
+        compilation_config=SimpleNamespace(cudagraph_mode="FULL"),
+        speculative_config=SimpleNamespace(num_speculative_tokens=5),
+        attn_groups=[[group]],
+        kv_cache_config=None,
+        kv_cache_dtype="auto",
+        model=None,
+        get_draft_model=lambda: None,
+    )
+    monkeypatch.setattr(
+        "vllm.v1.worker.adaptive_verification_profile_cache._device_total_memory_mib",
+        lambda: 1024,
+    )
+    monkeypatch.setattr(
+        "vllm.v1.worker.adaptive_verification_profile_cache."
+        "current_platform.get_device_capability",
+        lambda: "12.1",
+    )
+    monkeypatch.setattr(
+        "vllm.v1.worker.adaptive_verification_profile_cache."
+        "current_platform.get_device_name",
+        lambda: "TEST GPU",
+    )
+
+    factors = build_profile_cache_factors(runner, [1, 8])
+
+    assert factors["backends"]["attention"] == ["TEST"]
+    assert factors["backends"]["kv"] == [{"block_size": 16}]
 
 
 def _factors() -> dict:
