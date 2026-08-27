@@ -281,6 +281,12 @@ class Scheduler(SchedulerInterface):
                 self.reasoning_end_token_ids = tuple(
                     reasoning_config.natural_reasoning_end_token_ids or ()
                 )
+                logger.info(
+                    "Phase-aware speculative decoding is enabled: reasoning K=%d, "
+                    "output K=%d.",
+                    self.num_spec_tokens_during_reasoning,
+                    self.num_spec_tokens,
+                )
             self.use_eagle = speculative_config.use_eagle()
             if self.use_eagle:
                 self.num_prefill_lookahead = (
@@ -2242,6 +2248,11 @@ class Scheduler(SchedulerInterface):
         token_ids = request.output_token_ids
         if self._has_token_suffix(token_ids, self.reasoning_end_token_ids):
             request.reasoning_ended = True
+            logger.info_once(
+                "Phase-aware speculative decoding observed its first reasoning "
+                "end marker; subsequent output uses K=%d.",
+                self.num_spec_tokens,
+            )
         elif self._has_token_suffix(token_ids, self.reasoning_start_token_ids):
             request.reasoning_ended = False
 
@@ -2362,6 +2373,25 @@ class Scheduler(SchedulerInterface):
         else:
             if request.resumable:
                 request.streaming_queue = deque()
+            if self.num_spec_tokens_during_reasoning is not None:
+                if request.reasoning_ended is False:
+                    logger.info_once(
+                        "Phase-aware speculative decoding admitted its first "
+                        "request inside reasoning; using K=%d.",
+                        self.num_spec_tokens_during_reasoning,
+                    )
+                elif request.reasoning_ended is True:
+                    logger.info_once(
+                        "Phase-aware speculative decoding admitted its first "
+                        "request outside reasoning; using K=%d.",
+                        self.num_spec_tokens,
+                    )
+                else:
+                    logger.info_once(
+                        "Phase-aware speculative decoding admitted its first "
+                        "request without phase state; using output K=%d.",
+                        self.num_spec_tokens,
+                    )
             self._enqueue_waiting_request(request)
             self.requests[request.request_id] = request
             if self.connector is not None:
