@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import msgspec
+
 from vllm import SamplingParams
 from vllm.v1.engine import EngineCoreRequest
 from vllm.v1.request import Request, RequestStatus
@@ -40,3 +42,26 @@ def test_request_copies_session_id_from_engine_core_request():
     request = Request.from_engine_core_request(engine_request, block_hasher=None)
 
     assert request.session_id == "session-1"
+
+
+def test_request_copies_reasoning_state_from_engine_core_request():
+    parser_kwargs = {"chat_template_kwargs": {"enable_thinking": True}}
+    engine_request = EngineCoreRequest(
+        request_id="request-reasoning",
+        prompt_token_ids=[1, 2, 3],
+        mm_features=None,
+        sampling_params=SamplingParams(max_tokens=1),
+        pooling_params=None,
+        arrival_time=0.0,
+        lora_request=None,
+        cache_salt=None,
+        data_parallel_rank=None,
+        reasoning_ended=False,
+        reasoning_parser_kwargs=parser_kwargs,
+    )
+
+    payload = msgspec.msgpack.encode(engine_request)
+    decoded_request = msgspec.msgpack.decode(payload, type=EngineCoreRequest)
+    request = Request.from_engine_core_request(decoded_request, block_hasher=None)
+
+    assert request.reasoning_ended is False
