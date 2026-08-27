@@ -1282,13 +1282,31 @@ class Scheduler(SchedulerInterface):
             num_spec_tokens_to_schedule = self.dynamic_sd_lookup[
                 len(num_scheduled_tokens)
             ]
-        if self.num_spec_tokens_during_reasoning is not None and any(
-            self.requests[req_id].reasoning_ended is False
-            for req_id in num_scheduled_tokens
-        ):
+        scheduling_reasoning = (
+            self.num_spec_tokens_during_reasoning is not None
+            and any(
+                self.requests[req_id].reasoning_ended is False
+                for req_id in num_scheduled_tokens
+            )
+        )
+        if scheduling_reasoning:
             num_spec_tokens_to_schedule = min(
                 num_spec_tokens_to_schedule,
                 self.num_spec_tokens_during_reasoning,
+            )
+            logger.info_once(
+                "Phase-aware speculative decoding scheduled its first reasoning "
+                "step with K=%d.",
+                num_spec_tokens_to_schedule,
+            )
+        elif (
+            self.num_spec_tokens_during_reasoning is not None
+            and num_scheduled_tokens
+        ):
+            logger.info_once(
+                "Phase-aware speculative decoding scheduled its first output "
+                "step with K=%d.",
+                num_spec_tokens_to_schedule,
             )
 
         scheduled_encoder_input_stats = None
