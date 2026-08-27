@@ -197,9 +197,9 @@ class AdaptiveVerificationManager:
                     "context_len": envs.VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN,
                 }
 
-    def set_initial_cost_curves(self, samples: list[StepTimingSample]) -> tuple[
-        list[tuple[int, float]], list[tuple[int, float]]
-    ]:
+    def set_initial_cost_curves(
+        self, samples: list[StepTimingSample]
+    ) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
         def median_curve(
             points: Iterable[tuple[int, float]],
         ) -> list[tuple[int, float]]:

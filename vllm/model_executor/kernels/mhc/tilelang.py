@@ -352,9 +352,7 @@ def mhc_pre_broadcast_tilelang(
 
     use_deep_gemm = is_deep_gemm_supported()
     n_splits = (
-        compute_num_split(64, hidden_size, cdiv(num_tokens, 64))
-        if use_deep_gemm
-        else 1
+        compute_num_split(64, hidden_size, cdiv(num_tokens, 64)) if use_deep_gemm else 1
     )
 
     residual_out = torch.empty(
