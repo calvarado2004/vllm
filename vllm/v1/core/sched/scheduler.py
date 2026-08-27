@@ -2257,6 +2257,40 @@ class Scheduler(SchedulerInterface):
         start = len(token_ids) - len(suffix)
         return all(token_ids[start + i] == token for i, token in enumerate(suffix))
 
+    @staticmethod
+    def _last_token_sequence_index(
+        token_ids: Sequence[int], marker: tuple[int, ...]
+    ) -> int:
+        if not marker or len(token_ids) < len(marker):
+            return -1
+        for start in range(len(token_ids) - len(marker), -1, -1):
+            if all(token_ids[start + i] == token for i, token in enumerate(marker)):
+                return start
+        return -1
+
+    def _initialize_reasoning_phase(self, request: Request) -> None:
+        if (
+            self.num_spec_tokens_during_reasoning is None
+            or request.reasoning_ended is not None
+            or request.prompt_token_ids is None
+        ):
+            return
+
+        start_index = self._last_token_sequence_index(
+            request.prompt_token_ids, self.reasoning_start_token_ids
+        )
+        end_index = self._last_token_sequence_index(
+            request.prompt_token_ids, self.reasoning_end_token_ids
+        )
+        if start_index > end_index:
+            request.reasoning_ended = False
+            logger.info_once(
+                "Phase-aware speculative decoding inferred an initial reasoning "
+                "phase from the prompt marker."
+            )
+        elif end_index > start_index:
+            request.reasoning_ended = True
+
     def _update_reasoning_phase(self, request: Request) -> None:
         if (
             self.num_spec_tokens_during_reasoning is None
@@ -2391,6 +2425,7 @@ class Scheduler(SchedulerInterface):
         else:
             if request.resumable:
                 request.streaming_queue = deque()
+            self._initialize_reasoning_phase(request)
             if self.num_spec_tokens_during_reasoning is not None:
                 if request.reasoning_ended is False:
                     logger.info_once(

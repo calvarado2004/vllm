@@ -235,6 +235,38 @@ def test_scheduler_caps_k_during_reasoning_then_restores_output_k():
     assert output.num_spec_tokens_to_schedule == 5
 
 
+def test_scheduler_infers_reasoning_phase_from_prompt_markers():
+    scheduler = _make_scheduler_with_dynamic_sd(
+        [(1, 16, 5)],
+        runtime_num_speculative_tokens=5,
+        num_speculative_tokens_during_reasoning=3,
+    )
+    request = create_requests(num_requests=1, num_tokens=4)[0]
+    request.prompt_token_ids = [7, 8, *THINK_START_TOKEN_IDS]
+    request._all_token_ids = request.prompt_token_ids.copy()
+    scheduler.add_request(request)
+
+    assert request.reasoning_ended is False
+    assert scheduler.schedule().num_spec_tokens_to_schedule == 3
+
+    output_scheduler = _make_scheduler_with_dynamic_sd(
+        [(1, 16, 5)],
+        runtime_num_speculative_tokens=5,
+        num_speculative_tokens_during_reasoning=3,
+    )
+    output_request = create_requests(num_requests=1, num_tokens=5)[0]
+    output_request.prompt_token_ids = [
+        *THINK_START_TOKEN_IDS,
+        8,
+        *THINK_END_TOKEN_IDS,
+    ]
+    output_request._all_token_ids = output_request.prompt_token_ids.copy()
+    output_scheduler.add_request(output_request)
+
+    assert output_request.reasoning_ended is True
+    assert output_scheduler.schedule().num_spec_tokens_to_schedule == 5
+
+
 def test_scheduler_uses_conservative_k_for_mixed_reasoning_batch():
     scheduler = _make_scheduler_with_dynamic_sd(
         [(1, 16, 5)],
