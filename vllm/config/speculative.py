@@ -185,6 +185,14 @@ class SpeculativeConfig:
     inclusive batch-size range.
     """
 
+    num_speculative_tokens_during_reasoning: int | None = Field(default=None, ge=0)
+    """Maximum number of speculative tokens used while generating reasoning.
+
+    Once every scheduled request has left its reasoning section, decoding uses
+    ``num_speculative_tokens`` (or the batch-size schedule, when configured).
+    Requires a reasoning parser so the reasoning boundaries can be tracked.
+    """
+
     # params generated in the post-init stage
     draft_model_config: SkipValidation[ModelConfig] = None  # type: ignore
     """The configuration of the draft model initialized internal."""
@@ -1141,6 +1149,13 @@ class SpeculativeConfig:
         if self.method != "dspark" and self.enable_adaptive_verification:
             raise ValueError("Adaptive verification only supported with DSpark")
 
+        reasoning_k = self.num_speculative_tokens_during_reasoning
+        if reasoning_k is not None and reasoning_k > self.num_speculative_tokens:
+            raise ValueError(
+                "num_speculative_tokens_during_reasoning must be less than or "
+                "equal to num_speculative_tokens"
+            )
+
         return self
 
     def _validate_suffix_decoding(self):
@@ -1487,7 +1502,10 @@ class SpeculativeConfig:
         return self.method == "dspark"
 
     def uses_dynamic_speculative_decoding(self) -> bool:
-        return self.num_speculative_tokens_per_batch_size is not None
+        return (
+            self.num_speculative_tokens_per_batch_size is not None
+            or self.num_speculative_tokens_during_reasoning is not None
+        )
 
     def uses_draft_model(self) -> bool:
         return self.method == "draft_model"

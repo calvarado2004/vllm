@@ -11,6 +11,9 @@ from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.spec_decode.dynamic.utils import build_dynamic_sd_schedule_lookup
 from vllm.v1.structured_output import StructuredOutputManager
 
+THINK_START_TOKEN_IDS = [1001, 1002]
+THINK_END_TOKEN_IDS = [2001, 2002]
+
 
 def _make_lookup(
     num_speculative_tokens_per_batch_size: list[tuple[int, int, int]],
@@ -31,11 +34,17 @@ def _make_scheduler_with_dynamic_sd(
     max_num_seqs: int = 16,
     max_num_batched_tokens: int = 8192,
     runtime_num_speculative_tokens: int = 3,
+    num_speculative_tokens_during_reasoning: int | None = None,
 ) -> Scheduler:
     base_scheduler = create_scheduler(
         max_num_seqs=max_num_seqs,
         max_num_batched_tokens=max_num_batched_tokens,
         num_speculative_tokens=runtime_num_speculative_tokens,
+        num_speculative_tokens_during_reasoning=(
+            num_speculative_tokens_during_reasoning
+        ),
+        reasoning_start_token_ids=THINK_START_TOKEN_IDS,
+        reasoning_end_token_ids=THINK_END_TOKEN_IDS,
     )
 
     speculative_config = base_scheduler.vllm_config.speculative_config
@@ -52,10 +61,15 @@ def _make_scheduler_with_dynamic_sd(
 
 
 def _add_requests_and_schedule(
-    scheduler: Scheduler, num_requests: int, *, num_tokens: int = 10
+    scheduler: Scheduler,
+    num_requests: int,
+    *,
+    num_tokens: int = 10,
+    reasoning_ended: bool | None = None,
 ):
     requests = create_requests(num_requests=num_requests, num_tokens=num_tokens)
     for request in requests:
+        request.reasoning_ended = reasoning_ended
         scheduler.add_request(request)
     return scheduler.schedule()
 
@@ -189,6 +203,80 @@ def test_scheduler_falls_back_to_static_k_when_dsd_not_configured():
     assert output.num_spec_tokens_to_schedule == 3
 
 
+def test_reasoning_k_cannot_exceed_runtime_max():
+    with pytest.raises(
+        ValueError,
+        match="num_speculative_tokens_during_reasoning must be less than",
+    ):
+        create_scheduler(
+            num_speculative_tokens=3,
+            num_speculative_tokens_during_reasoning=4,
+            reasoning_start_token_ids=THINK_START_TOKEN_IDS,
+            reasoning_end_token_ids=THINK_END_TOKEN_IDS,
+        )
+
+
+def test_scheduler_caps_k_during_reasoning_then_restores_output_k():
+    scheduler = _make_scheduler_with_dynamic_sd(
+        [(1, 16, 5)],
+        runtime_num_speculative_tokens=5,
+        num_speculative_tokens_during_reasoning=3,
+    )
+
+    reasoning_output = _add_requests_and_schedule(scheduler, 1, reasoning_ended=False)
+    assert reasoning_output.num_spec_tokens_to_schedule == 3
+
+    output_scheduler = _make_scheduler_with_dynamic_sd(
+        [(1, 16, 5)],
+        runtime_num_speculative_tokens=5,
+        num_speculative_tokens_during_reasoning=3,
+    )
+    output = _add_requests_and_schedule(output_scheduler, 1, reasoning_ended=True)
+    assert output.num_spec_tokens_to_schedule == 5
+
+
+def test_scheduler_uses_conservative_k_for_mixed_reasoning_batch():
+    scheduler = _make_scheduler_with_dynamic_sd(
+        [(1, 16, 5)],
+        runtime_num_speculative_tokens=5,
+        num_speculative_tokens_during_reasoning=3,
+    )
+    requests = create_requests(num_requests=2, num_tokens=10)
+    requests[0].reasoning_ended = True
+    requests[1].reasoning_ended = False
+    for request in requests:
+        scheduler.add_request(request)
+
+    assert scheduler.schedule().num_spec_tokens_to_schedule == 3
+
+
+def test_reasoning_boundary_tokens_update_phase_across_steps():
+    scheduler = _make_scheduler_with_dynamic_sd(
+        [(1, 16, 5)],
+        runtime_num_speculative_tokens=5,
+        num_speculative_tokens_during_reasoning=3,
+    )
+    request = create_requests(num_requests=1, num_tokens=10)[0]
+    request.reasoning_ended = False
+
+    scheduler._update_request_with_output(request, [7, *THINK_END_TOKEN_IDS])
+    assert request.reasoning_ended is True
+
+    scheduler._update_request_with_output(request, [8, *THINK_START_TOKEN_IDS])
+    assert request.reasoning_ended is False
+
+
+def test_reasoning_k_caps_batch_size_schedule():
+    scheduler = _make_scheduler_with_dynamic_sd(
+        [(1, 16, 4)],
+        runtime_num_speculative_tokens=5,
+        num_speculative_tokens_during_reasoning=3,
+    )
+
+    output = _add_requests_and_schedule(scheduler, 1, reasoning_ended=False)
+    assert output.num_spec_tokens_to_schedule == 3
+
+
 def test_dynamic_sd_is_disabled_with_data_parallel(caplog_vllm):
     with caplog_vllm.at_level(logging.WARNING, logger="vllm"):
         scheduler = create_scheduler(
@@ -200,12 +288,16 @@ def test_dynamic_sd_is_disabled_with_data_parallel(caplog_vllm):
                 (64, 128, 2),
                 (256, 4096, 0),
             ],
+            num_speculative_tokens_during_reasoning=2,
+            reasoning_start_token_ids=THINK_START_TOKEN_IDS,
+            reasoning_end_token_ids=THINK_END_TOKEN_IDS,
             data_parallel_size=2,
         )
 
     speculative_config = scheduler.vllm_config.speculative_config
     assert speculative_config is not None
     assert speculative_config.num_speculative_tokens_per_batch_size is None
+    assert speculative_config.num_speculative_tokens_during_reasoning is None
     assert scheduler.dynamic_sd_lookup is None
     assert "Dynamic speculative decoding is not supported with data parallelism" in (
         caplog_vllm.text

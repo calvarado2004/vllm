@@ -64,6 +64,7 @@ def _create_vllm_config_for_dsd(
 
     speculative_config = MagicMock()
     speculative_config.uses_dynamic_speculative_decoding.return_value = use_dynamic_sd
+    speculative_config.num_speculative_tokens_during_reasoning = None
     if use_dynamic_sd:
         # DSD reads the per-batch-size schedule; a schedule entry with K
         # speculative tokens maps to decode query length K + 1. By default
@@ -196,6 +197,48 @@ def test_dynamic_sd_non_uniform_batch_falls_back_to_piecewise(monkeypatch):
     assert desc.num_reqs is None
     assert desc.num_tokens == 3
     assert desc.num_active_loras == 0
+
+
+def test_reasoning_phase_sd_captures_reasoning_and_output_shapes(monkeypatch):
+    max_spec_tokens = 5
+    reasoning_spec_tokens = 3
+
+    monkeypatch.setattr(
+        gpu_cudagraph_utils,
+        "get_pp_group",
+        lambda: SimpleNamespace(is_first_rank=True, is_last_rank=True),
+    )
+
+    vllm_config = _create_vllm_config_for_dsd(
+        max_num_seqs=2,
+        max_spec_tokens=max_spec_tokens,
+        cudagraph_mode="FULL_AND_PIECEWISE",
+    )
+    speculative_config = vllm_config.speculative_config
+    speculative_config.num_speculative_tokens_per_batch_size = None
+    speculative_config.num_speculative_tokens_during_reasoning = reasoning_spec_tokens
+    manager = gpu_cudagraph_utils.CudaGraphManager(
+        vllm_config=vllm_config,
+        device=torch.device("cpu"),
+        cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE,
+        decode_query_len=max_spec_tokens + 1,
+    )
+    manager._graphs_captured = True
+
+    captured_query_lens = {reasoning_spec_tokens + 1, max_spec_tokens + 1}
+    for query_len in range(1, max_spec_tokens + 2):
+        desc = manager.dispatch(
+            num_reqs=1,
+            num_tokens=query_len,
+            uniform_token_count=query_len,
+            num_active_loras=0,
+        )
+        expected = (
+            CUDAGraphMode.FULL
+            if query_len in captured_query_lens
+            else CUDAGraphMode.PIECEWISE
+        )
+        assert desc.cg_mode == expected
 
 
 def test_prompt_chunks_shaped_like_spec_decode_miss_the_full_graph(monkeypatch):

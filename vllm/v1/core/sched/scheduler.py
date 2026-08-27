@@ -3,7 +3,7 @@
 import itertools
 import time
 from collections import defaultdict, deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -255,12 +255,31 @@ class Scheduler(SchedulerInterface):
         # reserve between a chunk boundary and the prefill end.
         self.num_prefill_lookahead = 0
         self.dynamic_sd_lookup: list[int] | None = None
+        self.num_spec_tokens_during_reasoning: int | None = None
+        self.reasoning_start_token_ids: tuple[int, ...] = ()
+        self.reasoning_end_token_ids: tuple[int, ...] = ()
         if speculative_config is not None:
             if speculative_config.num_speculative_tokens_per_batch_size:
                 self.dynamic_sd_lookup = build_dynamic_sd_schedule_lookup(
                     speculative_config.num_speculative_tokens_per_batch_size,
                     vllm_max_batch_size=self.scheduler_config.max_num_seqs,
                     vllm_num_speculative_tokens=self.num_spec_tokens,
+                )
+            self.num_spec_tokens_during_reasoning = (
+                speculative_config.num_speculative_tokens_during_reasoning
+            )
+            if self.num_spec_tokens_during_reasoning is not None:
+                reasoning_config = vllm_config.reasoning_config
+                if reasoning_config is None or not reasoning_config.enabled:
+                    raise ValueError(
+                        "num_speculative_tokens_during_reasoning requires a "
+                        "reasoning parser with start and end tokens"
+                    )
+                self.reasoning_start_token_ids = tuple(
+                    reasoning_config.reasoning_start_token_ids or ()
+                )
+                self.reasoning_end_token_ids = tuple(
+                    reasoning_config.natural_reasoning_end_token_ids or ()
                 )
             self.use_eagle = speculative_config.use_eagle()
             if self.use_eagle:
@@ -1257,6 +1276,14 @@ class Scheduler(SchedulerInterface):
             num_spec_tokens_to_schedule = self.dynamic_sd_lookup[
                 len(num_scheduled_tokens)
             ]
+        if self.num_spec_tokens_during_reasoning is not None and any(
+            self.requests[req_id].reasoning_ended is False
+            for req_id in num_scheduled_tokens
+        ):
+            num_spec_tokens_to_schedule = min(
+                num_spec_tokens_to_schedule,
+                self.num_spec_tokens_during_reasoning,
+            )
 
         scheduled_encoder_input_stats = None
         if (
@@ -2189,6 +2216,7 @@ class Scheduler(SchedulerInterface):
         stopped = False
         for num_new, output_token_id in enumerate(new_token_ids, 1):
             request.append_output_token_ids(output_token_id)
+            self._update_reasoning_phase(request)
 
             # Check for stop and update request state.
             # This must be called before we make the EngineCoreOutput.
@@ -2197,6 +2225,25 @@ class Scheduler(SchedulerInterface):
                 del new_token_ids[num_new:]  # Trim new tokens if needed.
                 break
         return new_token_ids, stopped
+
+    @staticmethod
+    def _has_token_suffix(token_ids: Sequence[int], suffix: tuple[int, ...]) -> bool:
+        if not suffix or len(token_ids) < len(suffix):
+            return False
+        start = len(token_ids) - len(suffix)
+        return all(token_ids[start + i] == token for i, token in enumerate(suffix))
+
+    def _update_reasoning_phase(self, request: Request) -> None:
+        if (
+            self.num_spec_tokens_during_reasoning is None
+            or request.reasoning_ended is None
+        ):
+            return
+        token_ids = request.output_token_ids
+        if self._has_token_suffix(token_ids, self.reasoning_end_token_ids):
+            request.reasoning_ended = True
+        elif self._has_token_suffix(token_ids, self.reasoning_start_token_ids):
+            request.reasoning_ended = False
 
     def _free_encoder_inputs(self, request: Request) -> None:
         cached_encoder_input_ids = self.encoder_cache_manager.get_cached_input_ids(

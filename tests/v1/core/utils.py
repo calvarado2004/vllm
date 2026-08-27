@@ -11,6 +11,7 @@ from vllm.config import (
     KVTransferConfig,
     ModelConfig,
     ParallelConfig,
+    ReasoningConfig,
     SchedulerConfig,
     SpeculativeConfig,
     VllmConfig,
@@ -67,6 +68,9 @@ def create_scheduler(
     pipeline_parallel_size: int = 1,
     data_parallel_size: int = 1,
     num_speculative_tokens_per_batch_size: list[tuple[int, int, int]] | None = None,
+    num_speculative_tokens_during_reasoning: int | None = None,
+    reasoning_start_token_ids: list[int] | None = None,
+    reasoning_end_token_ids: list[int] | None = None,
     use_ec_connector: bool = False,
     ec_role: str | None = None,
     use_v2_model_runner: bool | None = None,
@@ -147,12 +151,26 @@ def create_scheduler(
             spec_kwargs["num_speculative_tokens_per_batch_size"] = (
                 num_speculative_tokens_per_batch_size
             )
+        if num_speculative_tokens_during_reasoning is not None:
+            spec_kwargs["num_speculative_tokens_during_reasoning"] = (
+                num_speculative_tokens_during_reasoning
+            )
         if speculative_method is not None:
             spec_kwargs["method"] = speculative_method
             spec_kwargs["prompt_lookup_max"] = num_speculative_tokens
             spec_kwargs["prompt_lookup_min"] = 1
         speculative_config = SpeculativeConfig(**spec_kwargs)
         speculative_config.parallel_drafting = parallel_drafting
+
+    reasoning_config = None
+    if num_speculative_tokens_during_reasoning is not None:
+        assert reasoning_start_token_ids
+        assert reasoning_end_token_ids
+        reasoning_config = ReasoningConfig()
+        reasoning_config._reasoning_start_token_ids = reasoning_start_token_ids
+        reasoning_config._reasoning_end_token_ids = reasoning_end_token_ids
+        reasoning_config._natural_reasoning_end_token_ids = reasoning_end_token_ids
+        reasoning_config._enabled = True
 
     ec_transfer_config = (
         ECTransferConfig(
@@ -174,6 +192,7 @@ def create_scheduler(
         ),
         kv_transfer_config=kv_transfer_config,
         speculative_config=speculative_config,
+        reasoning_config=reasoning_config,
         ec_transfer_config=ec_transfer_config,
     )
     if kv_cache_spec is None:

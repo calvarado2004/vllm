@@ -85,6 +85,7 @@ class Request:
         self.sampling_params = sampling_params
         self.pooling_params = pooling_params
         self.lora_request = lora_request
+        self.reasoning_ended = reasoning_ended
         self.structured_output_request = StructuredOutputRequest.from_sampling_params(
             sampling_params
         )

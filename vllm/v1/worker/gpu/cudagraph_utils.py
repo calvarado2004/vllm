@@ -201,17 +201,22 @@ class CudaGraphManager:
             num_spec_per_batch_size = (
                 speculative_config.num_speculative_tokens_per_batch_size
             )
-            # uses_dynamic_speculative_decoding() guarantees this is set.
-            assert num_spec_per_batch_size is not None
             # decode_query_len = num_speculative_steps + num_new_sampled_tokens
             # _per_step. Recover num_new_sampled_tokens_per_step
             # from the values the manager already has.
             num_new_sampled_tokens_per_step = (
                 self.decode_query_len - self.vllm_config.num_speculative_tokens
             )
-            # Each entry is (range_start, range_end, num_speculative_tokens).
+            possible_k = (
+                {self.vllm_config.num_speculative_tokens}
+                if num_spec_per_batch_size is None
+                else {x[2] for x in num_spec_per_batch_size}
+            )
+            reasoning_k = speculative_config.num_speculative_tokens_during_reasoning
+            if reasoning_k is not None:
+                possible_k.update(min(k, reasoning_k) for k in tuple(possible_k))
             decode_query_lens = [
-                x[2] + num_new_sampled_tokens_per_step for x in num_spec_per_batch_size
+                k + num_new_sampled_tokens_per_step for k in sorted(possible_k)
             ]
         else:
             decode_query_lens = [self.decode_query_len]
