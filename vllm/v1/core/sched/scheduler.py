@@ -1299,10 +1299,7 @@ class Scheduler(SchedulerInterface):
                 "step with K=%d.",
                 num_spec_tokens_to_schedule,
             )
-        elif (
-            self.num_spec_tokens_during_reasoning is not None
-            and num_scheduled_tokens
-        ):
+        elif self.num_spec_tokens_during_reasoning is not None and num_scheduled_tokens:
             logger.info_once(
                 "Phase-aware speculative decoding scheduled its first output "
                 "step with K=%d.",
